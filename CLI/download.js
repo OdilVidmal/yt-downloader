@@ -3,7 +3,13 @@ const path = require("path");
 const readline = require("readline");
 const fs = require("fs");
 const ProgressBar = require("cli-progress");
+const axios = require("axios");
+const stream = require("stream");
+const util = require("util");
 const cron = require("node-cron"); // For scheduling
+
+// Promisify stream.pipeline for easier usage
+const pipeline = util.promisify(stream.pipeline);
 
 // Create an interface for user input
 const rl = readline.createInterface({
@@ -44,17 +50,8 @@ const getVideoMetadata = async (url) => {
 // Function to download a YouTube video
 const downloadVideo = async (url, quality, outputFilename) => {
   try {
-    const options = {
-      output: path.join(outputDirectory, outputFilename),
-      format: quality,
-      mergeOutputFormat: path.extname(outputFilename).slice(1) || "mp4",
-      concurrentFragments: 10, // Increase concurrent fragments for faster downloads
-      progress: (info) => {
-        if (info.percent) {
-          bar.update(info.percent / 100);
-        }
-      },
-    };
+    const response = await ytdlp(url, { dumpJson: true, format: quality });
+    const videoUrl = response.url;
 
     // Create a new progress bar instance
     const bar = new ProgressBar.SingleBar(
@@ -71,7 +68,26 @@ const downloadVideo = async (url, quality, outputFilename) => {
     // Show progress bar
     bar.start(100, 0);
 
-    await ytdlp(url, options);
+    // Setup the file stream
+    const fileStream = fs.createWriteStream(
+      path.join(outputDirectory, outputFilename)
+    );
+
+    // Download the video using Axios and stream
+    const responseStream = await axios({
+      url: videoUrl,
+      method: "GET",
+      responseType: "stream",
+    });
+
+    responseStream.data.on("data", (chunk) => {
+      // Update progress bar
+      bar.update(
+        (chunk.length / responseStream.headers["content-length"]) * 100
+      );
+    });
+
+    await pipeline(responseStream.data, fileStream);
 
     // Record the end time
     const endTime = Date.now();
